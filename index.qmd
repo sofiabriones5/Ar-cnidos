@@ -1,0 +1,274 @@
+---
+title: "Arácnidos Costa Rica"
+format: html
+theme: lux
+lang: es
+toc: true
+---
+
+# Presentación
+Este documento muestra la riqueza de especies de arácnidos (clase *Arachnida*) en áreasilvestres protegidas (ASP) de Costa Rica.
+
+Fuente de datos:
+
+- Registros de presencia de arácnidos: [Consulta al sistema mundial de informacion en biodiversidad (GBIF)](https://doi.org/10.15468/dl.ghbhx9)
+- Polígonos de ASP: [servicio WFS](https://geos1pne.sirefor.go.cr/wfs) del Sistema Nacional de Áreas de Conservación (SINAC)
+
+# Carga de paquetes
+```{r}
+#| label: carga-paquetes
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(plotly)
+library(dplyr)
+```
+
+# Carga de datos
+
+## Áreas silvestres protegidas
+```{r}
+#| label: carga-datos-asp
+#| message: false
+#| warning: false
+
+asp <- st_read("asp.gpkg", quiet = TRUE) |>
+  st_transform(4326) |>
+  st_make_valid()
+
+plot(asp$geom)
+```
+
+## Resgistros de presencia de arácnidos
+```{r}
+#| label: carga-datos-arácnidos
+#| message: false
+#| warning: false
+
+aracnidos <-
+  st_read(
+    "aracnidos.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", # columna de longitud decimal
+      "Y_POSSIBLE_NAMES=decimalLatitude"   # columna de latitud decimal
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84
+st_crs(aracnidos) <- 4326
+```
+
+# Visualización de datos
+
+## Cantidad de registros de presencia por especie
+```{r}
+#| label: grafico-registros-especies
+#| warning: false
+#| message: false
+
+registros_aracnidos_x_especie <- 
+  aracnidos |> 
+  st_drop_geometry() |>
+  group_by(species) |> 
+  summarise(cantidad_registros = n()) |>
+  filter(species != "")
+
+ grafico_ggplot2 <-
+registros_aracnidos_x_especie |>
+  arrange(desc(cantidad_registros)) |>
+  slice(1:10) |>
+  ggplot(aes(x = reorder(species, cantidad_registros), y = cantidad_registros)) + 
+  geom_col() +
+  coord_flip() +
+  xlab("Especie") +
+  ylab("Cantidad de registros") + 
+  theme_classic()
+
+ ggplotly(grafico_ggplot2) |> config(locale="es")
+```
+
+## Mapa de distribución de la especie *Centruroides limbatus*
+```{r}
+#| label: filtro-distribucion
+#| warning: false
+#| message: false
+
+centruroides_limbatus <- 
+  aracnidos |>
+  filter(species == "Centruroides limbatus")
+```
+
+```{r}
+#| label: mapa-limbatus
+#| message: false
+#| warning: false
+
+leaflet() |>
+  setView(
+    lng = -84,
+    lat = 10,
+    zoom = 7
+  ) |>
+  addProviderTiles(provider = providers$CartoDB.Positron, group = "Carto Positron") |>
+  addPolygons(
+    data = asp,
+    color = "purple",
+    weight = 1.5,
+    stroke = TRUE,
+    group = "ASP"
+  ) |>
+  addCircleMarkers(
+    data = centruroides_limbatus,
+    color = "turquoise",
+    radius = 4,
+    stroke = FALSE,
+    group = "Centruroides limbatus"
+  ) |>
+  addLayersControl(
+    baseGroups = c("Carto Positron"),
+    overlayGroups = c("ASP", "Centruroides limbatus")
+  )
+```
+
+## Mapa de riqueza de especies arácnidas en ASP
+
+1. Unión espacial de arácnidos y ASP
+
+```{r}
+#| label: union-espacial
+#| message: false
+#| warning: false
+
+aracnidos_union_asp <- 
+  st_join(x=aracnidos,
+          y= dplyr::select(asp, codigo),
+          join = st_within)
+```
+
+2. Conteo de la cantidad de especies de arácnidos en cada ASP
+
+```{r}
+#| label: conteo-especies
+#| message: false
+#| warning: false
+
+riqueza_especies_aracnidos_asp <- 
+  aracnidos_union_asp |>
+  st_drop_geometry() |>
+  group_by(codigo) |>
+  summarise(riqueza_especies_aracnidos_asp = n_distinct(species, na.rm = TRUE))
+```
+
+3. Unión de geometrias de ASP con dataframe de riqueza de especies
+
+```{r}
+#| label: union-asp
+#| message: false
+#| warning: false
+
+asp_union_riqueza <-
+  left_join(x = asp,
+            y = dplyr::select(riqueza_especies_aracnidos_asp,codigo, riqueza_especies_aracnidos_asp),
+            by= "codigo") |> replace_na(list(riqueza_especies_aracnidos_asp = 0))
+```
+
+Mapa
+
+```{r}
+#| label: mapa
+#| message: false
+#| warning: false
+
+asp <-
+  st_read("asp.gpkg", quiet = TRUE) |>
+  st_transform(4326) |>
+  st_make_valid()
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = asp_union_riqueza$riqueza_especies_aracnidos,
+    na.color = "transparent"
+  )
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = asp_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(asp_union_riqueza$riqueza_especies_aracnidos),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>ASP:</strong>", asp_union_riqueza$nombre_asp),
+      paste("<strong>Riqueza de especies:</strong>", asp_union_riqueza$riqueza_especies_aracnidos),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |> addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = asp_union_riqueza$riqueza_especies_aracnidos,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = aracnidos,
+    stroke = F,
+    radius = 4,
+    fillColor = "black",
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", aracnidos$species),
+      paste0("<strong>Localidad: </strong>", aracnidos$locality),
+      paste0("<strong>Fecha: </strong>", aracnidos$eventDate),
+      paste0("<strong>Fuente: </strong>", aracnidos$institutionCode),
+      paste0("<a href='", aracnidos$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |> addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia")
+```
+
+
+
+
+
+
+
+
+
+
